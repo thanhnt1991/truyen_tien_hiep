@@ -1,0 +1,64 @@
+"use client";
+
+import React, { useEffect, useRef } from "react";
+
+interface AdsterraNativeBannerProps {
+  className?: string;
+}
+
+export default function AdsterraNativeBanner({ className = "" }: AdsterraNativeBannerProps) {
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+
+    const loadAd = () => {
+      if (!containerRef.current) return;
+
+      const containerId = "container-bd9f7fbaa50e6920e2a26ccc8509de3b";
+      containerRef.current.innerHTML = "";
+
+      const targetDiv = document.createElement("div");
+      targetDiv.id = containerId;
+      containerRef.current.appendChild(targetDiv);
+
+      const scriptInvoke = document.createElement("script");
+      scriptInvoke.type = "text/javascript";
+      scriptInvoke.src = "https://bicea.org/21/bd9f7fbaa50e6920e2a26ccc8509de3b";
+      scriptInvoke.async = true;
+      scriptInvoke.setAttribute("data-cfasync", "false");
+
+      containerRef.current.appendChild(scriptInvoke);
+    };
+
+    if (!("IntersectionObserver" in window)) {
+      loadAd();
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          observer.disconnect();
+          loadAd();
+        }
+      },
+      { rootMargin: "2250px 0px" },
+    );
+
+    observer.observe(wrapper);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div ref={wrapperRef} className={`flex flex-col items-center justify-center my-6 w-full ${className}`}>
+      <span className="text-[10px] uppercase tracking-wider text-[#A09688] mb-1">Gợi ý tài trợ</span>
+      <div 
+        ref={containerRef} 
+        className="w-full min-h-[100px] bg-[#FBF7ED]/60 rounded-md border border-[#E6D8BD] p-2 flex items-center justify-center shadow-sm overflow-hidden"
+      />
+    </div>
+  );
+}

@@ -1,0 +1,364 @@
+import Link from 'next/link';
+import type { Metadata } from 'next';
+import { notFound } from 'next/navigation';
+import ChapterList from '@/components/ChapterList';
+import AdsterraBanner from '@/components/AdsterraBanner';
+import BookComments from '@/components/BookComments';
+import { getNewBookPublicId, isNewBookIdentifier, queryD1 } from '@/lib/d1';
+import { formatCompactNumber } from '@/lib/format';
+import { resolveBookId } from '@/lib/books';
+import { buildBookDescription, getBookPath, getChapterPath, getSiteUrl, SITE_NAME } from '@/lib/seo';
+import { getCoverUrl } from '@/lib/covers';
+
+const BOOK_DETAIL_REVALIDATE_SECONDS = 5 * 60;
+
+export const revalidate = BOOK_DETAIL_REVALIDATE_SECONDS;
+
+interface Chapter {
+  id: number | string;
+  chapter_number: number;
+  title: string;
+  created_at: string;
+}
+
+interface Book {
+  id: number | string;
+  internal_id?: number;
+  title: string;
+  author: string;
+  cover_url: string;
+  status: string;
+  chapter_count: number;
+  description?: string | null;
+  genres?: string | null;
+  source_type?: string | null;
+  view_count?: number | null;
+}
+
+interface D1BookRow {
+  id: number;
+  public_id?: string | null;
+  title: string;
+  author: string;
+  cover_url: string;
+  status: string;
+  chapter_count: number;
+  description?: string | null;
+  genres?: string | null;
+  source_type?: string | null;
+  view_count?: number | null;
+}
+
+interface D1ChapterRow {
+  id: number;
+  chapter_number: number;
+  title: string;
+  created_at: string;
+}
+
+function splitTags(value?: string | null) {
+  return (value || "")
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+}
+
+async function getBookDetails(identifier: string) {
+  if (isNewBookIdentifier(identifier)) {
+    const publicId = getNewBookPublicId(identifier);
+    if (!publicId) return null;
+
+    const books = await queryD1<D1BookRow>(
+      `
+      SELECT id, public_id, title, author, cover_url, status, chapter_count,
+             description, genres, source_type, view_count
+      FROM books
+      WHERE public_id = ?
+      LIMIT 1
+      `,
+      [publicId],
+      BOOK_DETAIL_REVALIDATE_SECONDS,
+    );
+    if (!books[0]) return null;
+
+    const d1Book = books[0];
+    const chapters = await queryD1<D1ChapterRow>(
+      `
+      SELECT id, chapter_number, title, created_at
+      FROM chapters
+      WHERE book_id = ?
+      ORDER BY chapter_number ASC
+      LIMIT 100
+      `,
+      [d1Book.id],
+      3600,
+    );
+
+    return {
+      book: {
+        ...d1Book,
+        id: d1Book.public_id || `new-${d1Book.id}`,
+        internal_id: d1Book.id,
+        view_count: d1Book.view_count || 0,
+      } as Book,
+      chapters,
+      commentCount: 0,
+    };
+  }
+
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!url || !key) return null;
+  const id = await resolveBookId(identifier);
+  if (!id) return null;
+
+  try {
+    const headers = { apikey: key, Authorization: `Bearer ${key}` };
+    const resBook = await fetch(`${url}/rest/v1/books?id=eq.${id}`, {
+      headers,
+      next: { revalidate: 3600 },
+    });
+    if (!resBook.ok) return null;
+    const books = await resBook.json();
+    if (!books || books.length === 0) return null;
+
+    const resChapters = await fetch(
+      `${url}/rest/v1/chapters?book_id=eq.${id}&select=id,chapter_number,title,created_at&order=chapter_number.asc&limit=100`,
+      {
+        headers,
+        next: { revalidate: 3600 },
+      }
+    );
+    const chapters = resChapters.ok ? await resChapters.json() as Chapter[] : [];
+    let commentCount = 0;
+
+    try {
+      const resComments = await fetch(`${url}/rest/v1/rpc/list_book_comments`, {
+        method: "POST",
+        headers: {
+          ...headers,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          target_book_id: Number(id),
+          max_rows: 60,
+        }),
+        next: { revalidate: 300 },
+      });
+      const comments = resComments.ok ? await resComments.json() as unknown[] : [];
+      commentCount = comments.length;
+    } catch {
+      commentCount = 0;
+    }
+
+    return {
+      book: books[0] as Book,
+      chapters,
+      commentCount,
+    };
+  } catch (err) {
+    console.error("Error fetching book details:", err);
+    return null;
+  }
+}
+
+async function getBookSeoData(identifier: string) {
+  if (isNewBookIdentifier(identifier)) {
+    const publicId = getNewBookPublicId(identifier);
+    if (!publicId) return null;
+
+    const books = await queryD1<D1BookRow>(
+      `
+      SELECT id, public_id, title, author, cover_url, status, chapter_count,
+             description, genres, source_type, view_count
+      FROM books
+      WHERE public_id = ?
+      LIMIT 1
+      `,
+      [publicId],
+      3600,
+    );
+    const book = books[0];
+    if (!book) return null;
+
+    return {
+      ...book,
+      id: book.public_id || `new-${book.id}`,
+      view_count: book.view_count || 0,
+    } as Book;
+  }
+
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!url || !key) return null;
+  const id = await resolveBookId(identifier);
+  if (!id) return null;
+
+  try {
+    const res = await fetch(
+      `${url}/rest/v1/books?id=eq.${id}`,
+      {
+        headers: { apikey: key, Authorization: `Bearer ${key}` },
+        next: { revalidate: 3600 },
+      }
+    );
+    if (!res.ok) return null;
+    const books = await res.json() as Book[];
+    return books[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function generateMetadata({ params }: { params: { id: string } }): Promise<Metadata> {
+  const book = await getBookSeoData(params.id);
+  if (!book) {
+    return {
+      title: "Không tìm thấy truyện",
+    };
+  }
+
+  const siteUrl = getSiteUrl();
+  const path = getBookPath(book);
+  const description = buildBookDescription(book);
+  const images = book.cover_url ? [{ url: book.cover_url, alt: book.title }] : undefined;
+
+  return {
+    title: `${book.title} - ${book.author || "Chưa rõ"}`,
+    description,
+    alternates: {
+      canonical: `${siteUrl}${path}`,
+    },
+    openGraph: {
+      type: "book",
+      siteName: SITE_NAME,
+      title: `${book.title} - ${book.author || "Chưa rõ"}`,
+      description,
+      url: `${siteUrl}${path}`,
+      images,
+      locale: "vi_VN",
+    },
+    twitter: {
+      card: book.cover_url ? "summary_large_image" : "summary",
+      title: `${book.title} - ${book.author || "Chưa rõ"}`,
+      description,
+      images: book.cover_url ? [book.cover_url] : undefined,
+    },
+  };
+}
+
+export default async function BookDetailPage({
+  params,
+  searchParams,
+}: {
+  params: { id: string };
+  searchParams?: { chaptersPage?: string };
+}) {
+  const data = await getBookDetails(params.id);
+
+  if (!data) {
+    notFound();
+  }
+
+  const { book, chapters, commentCount } = data;
+  const initialChapterPage = Math.max(0, Number(searchParams?.chaptersPage || "0") || 0);
+  const tags = [...(book.source_type ? [book.source_type] : []), ...splitTags(book.genres)];
+  const siteUrl = getSiteUrl();
+  const bookUrl = `${siteUrl}${getBookPath(book)}`;
+  const bookDescription = buildBookDescription(book);
+  const bookJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "Book",
+    name: book.title,
+    author: book.author ? { "@type": "Person", name: book.author } : undefined,
+    description: bookDescription,
+    image: book.cover_url || undefined,
+    url: bookUrl,
+    inLanguage: "vi",
+    genre: splitTags(book.genres),
+    numberOfPages: book.chapter_count || chapters.length,
+  };
+
+  return (
+    <div className="flex flex-col gap-8 max-w-4xl mx-auto py-4">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify(bookJsonLd).replace(/</g, "\\u003c"),
+        }}
+      />
+
+      {/* Back button */}
+      <Link href="/" className="inline-flex items-center gap-1.5 text-xs text-[#8C8373] hover:text-[#A37B34] font-medium w-fit">
+        &larr; Trở về Trang Chủ
+      </Link>
+
+      {/* Book Info Header */}
+      <div className="p-5 md:p-6 rounded-lg flex flex-col md:flex-row gap-7 border border-[#DDD5C8] bg-[#FBFAF7]/90 shadow-[0_8px_26px_rgba(66,52,35,0.07)]">
+        <img
+          src={getCoverUrl(book.id, book.cover_url) || "https://images.unsplash.com/photo-1541963463532-d68292c34b19"}
+          alt={book.title}
+          className="w-44 h-64 object-cover rounded-md border border-[#D8CDBB] self-center md:self-start shrink-0 shadow-[0_10px_22px_rgba(66,52,35,0.13)]"
+        />
+        <div className="flex flex-col justify-between flex-1 gap-4">
+          <div>
+            <h1 className="font-serif-reading text-2xl md:text-3xl font-bold text-[#2C2825] mb-3 leading-snug">{book.title}</h1>
+            <p className="text-[#6B6357] text-sm mb-4">Tác giả: <span className="font-semibold text-[#2C2825]">{book.author || "Chưa rõ"}</span></p>
+            
+            <div className="flex flex-wrap gap-2.5 text-xs font-semibold">
+              <span className="bg-[#2C2825] text-white px-3 py-1.5 rounded-md border border-[#2C2825] shadow-sm">
+                {book.status || "Đang ra"}
+              </span>
+              <span className="bg-[#2C2825] text-white px-3 py-1.5 rounded-md border border-[#2C2825] shadow-sm">
+                {book.chapter_count || chapters.length} chương
+              </span>
+              <span className="bg-[#2C2825] text-white px-3 py-1.5 rounded-md border border-[#2C2825] shadow-sm">
+                {formatCompactNumber(book.view_count)} lượt đọc
+              </span>
+              <span className="bg-[#2C2825] text-white px-3 py-1.5 rounded-md border border-[#2C2825] shadow-sm">
+                {commentCount} bình luận
+              </span>
+              {tags.map((tag) => (
+                <span
+                  key={tag}
+                  className="bg-[#FBFAF7] text-[#6B6357] px-3 py-1.5 rounded-md border border-[#DDD5C8]"
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
+
+            {book.description && (
+              <p className="mt-5 max-w-2xl text-sm md:text-[15px] leading-7 text-[#5E5448]">
+                {book.description}
+              </p>
+            )}
+          </div>
+
+          {chapters.length > 0 && (
+            <Link
+              href={getChapterPath(book, chapters[0].chapter_number)}
+              className="inline-flex items-center justify-center bg-[#2C2825] hover:bg-[#4A443A] text-white font-semibold px-6 py-2.5 rounded-md transition-all w-fit shadow-sm hover:shadow-md"
+            >
+              Đọc từ chương 1
+            </Link>
+          )}
+        </div>
+      </div>
+
+      <ChapterList
+        bookId={book.id}
+        bookTitle={book.title}
+        initialChapters={chapters}
+        chapterCount={book.chapter_count || chapters.length}
+        initialPage={initialChapterPage}
+      />
+
+      <BookComments bookId={book.id} showFacebookNotice />
+
+      <AdsterraBanner />
+    </div>
+  );
+}

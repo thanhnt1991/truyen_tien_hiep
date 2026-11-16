@@ -1,0 +1,36 @@
+# ===== Next.js =====
+.next/
+out/
+build/
+
+# ===== Dependencies =====
+node_modules/
+
+# ===== Environment variables (KHÔNG commit key bí mật) =====
+.env
+.env.local
+.env.production
+.env*.local
+
+# ===== Python Importer =====
+importer/venv/
+importer/chapters/        # Thư mục chứa file chương đã tách (dữ liệu local)
+importer/__pycache__/
+importer/*.pyc
+
+# ===== Misc =====
+.DS_Store
+*.log
+Thumbs.db
+# Ignore all generated chapter files
+importer/chapters/
+
+/importer/chapters/Xich_Tam_Tuan_Thien/book_info.txt
+/importer/chapters/Xich_Tam_Tuan_Thien_Translated/book_info.txt
+importer/tien_hiep/
+importer/log.txt
+importer/theme_codegen_candidates.txt
+importer/theme_regen_progress.txt
+./importer/key_AI
+
+/importer/key_AI/
